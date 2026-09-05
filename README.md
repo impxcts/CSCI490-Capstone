@@ -1,2 +1,3 @@
-# CSCI490-Capstone
-My Capstone for CSCI 490
+# CSCI490-Capstone 
+## SafeBite: A Chronic-Illness Aware Food Safety App by Jesse Ortiz
+
