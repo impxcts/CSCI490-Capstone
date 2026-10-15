@@ -1,14 +1,13 @@
 """
-models.py - Database tables for SafeBite.
+models.py - The database tables.
 
-This file defines the two tables the backend uses right now:
+    users     -> accounts (email + hashed password)
+    scans     -> every barcode someone scanned
+    triggers  -> the ingredients each user wants to avoid
+    products  -> product info we got from Open Food Facts
 
-    users  -> one row per account (email + hashed password)
-    scans  -> one row per barcode a user scans, linked to that user
-
-Each table is written as a Python class. Flask-SQLAlchemy reads these
-classes and creates the matching tables in PostgreSQL, so we never have
-to write CREATE TABLE statements by hand.
+Each class below is a table. If you change one, make a migration so the
+database gets updated too (see the migrations/ folder and the README).
 """
 
 from datetime import datetime, timezone
@@ -16,90 +15,55 @@ from datetime import datetime, timezone
 from flask_sqlalchemy import SQLAlchemy
 from werkzeug.security import check_password_hash, generate_password_hash
 
-# The shared database object. app.py connects it to the Flask app with
-# database.init_app(app), and every model below inherits from database.Model.
+# the database object every table uses
 database = SQLAlchemy()
 
 
-# ---------------------------------------------------------------------------
-# Helper functions
-# ---------------------------------------------------------------------------
-
 def get_current_utc_time():
-    """Return the current time in UTC.
-
-    We always store times in UTC so the data is the same no matter which
-    time zone the server or the user is in. The phone converts it to the
-    user's local time when it displays it.
-    """
+    """Gets the current time in UTC (the phone converts it to local time)."""
     return datetime.now(timezone.utc)
 
 
 def format_timestamp_as_iso(timestamp):
-    """Turn a datetime into an ISO-8601 string that always includes a time zone.
-
-    Example output: "2026-10-09T20:15:00+00:00"
-
-    PostgreSQL keeps the time zone on saved timestamps, but SQLite (used in
-    the automated tests) drops it. If the time zone is missing, we add UTC
-    back so the phone always receives the same format.
-    """
+    """Turns a time into text like "2026-10-09T20:15:00+00:00"."""
+    # SQLite drops the time zone, so add UTC back if it's missing
     if timestamp.tzinfo is None:
         timestamp = timestamp.replace(tzinfo=timezone.utc)
     return timestamp.isoformat()
 
 
-# ---------------------------------------------------------------------------
-# Tables
-# ---------------------------------------------------------------------------
-
 class User(database.Model):
-    """One SafeBite account."""
+    """One account."""
 
     __tablename__ = "users"
 
-    # Unique number for each user. PostgreSQL assigns it automatically.
     id = database.Column(database.Integer, primary_key=True)
 
-    # Email is unique so two accounts can't share one. index=True makes
-    # looking a user up by email (which happens on every login) fast.
+    # unique so two accounts can't share an email
     email = database.Column(database.String(255), unique=True, nullable=False, index=True)
 
-    # We never store the real password, only a one-way hash of it.
-    # See set_password() below.
+    # we only ever store a hash of the password, never the real thing
     password_hash = database.Column(database.String(255), nullable=False)
 
-    # When the account was created.
     created_at = database.Column(
         database.DateTime(timezone=True), default=get_current_utc_time, nullable=False
     )
 
-    # Lets us write user.scans to get every scan this user made.
-    # cascade="all, delete-orphan" means deleting a user also deletes
-    # their scans, so no scans are left pointing at a missing user.
+    # lets us do user.scans, and deletes their scans if the user gets deleted
     scans = database.relationship(
         "Scan", backref="user", lazy=True, cascade="all, delete-orphan"
     )
 
     def set_password(self, plain_text_password):
-        """Hash the password and store only the hash.
-
-        A hash is a one-way scramble. It's easy to make from the password but
-        practically impossible to turn back into the password, so even if the
-        database leaked, the real passwords wouldn't.
-        """
+        """Hashes the password and saves the hash."""
         self.password_hash = generate_password_hash(plain_text_password)
 
     def check_password(self, plain_text_password):
-        """Return True if the typed password matches the stored hash."""
+        """Checks if a typed password matches the saved hash."""
         return check_password_hash(self.password_hash, plain_text_password)
 
     def to_dict(self):
-        """Return the user as a dictionary that can be sent to the app as JSON.
-
-        The password hash is deliberately left out. It should never leave
-        the server.
-        """
+        """Turns the user into a dictionary to send to the app (no password hash)."""
         return {
             "id": self.id,
             "email": self.email,
@@ -108,35 +72,29 @@ class User(database.Model):
 
 
 class Scan(database.Model):
-    """One barcode that a user scanned."""
+    """One barcode someone scanned."""
 
     __tablename__ = "scans"
 
-    # Unique number for each scan.
     id = database.Column(database.Integer, primary_key=True)
 
-    # Which user made this scan. ForeignKey links it to users.id, so the
-    # database won't allow a scan for a user that doesn't exist.
-    # index=True makes "get all scans for this user" fast.
+    # which user scanned it
     user_id = database.Column(
         database.Integer, database.ForeignKey("users.id"), nullable=False, index=True
     )
 
-    # The number read from the barcode, e.g. "041196910759".
-    # Stored as text, not a number, because barcodes can start with zeros.
+    # saved as text, not a number, since barcodes can start with 0
     barcode = database.Column(database.String(128), nullable=False)
 
-    # The barcode format reported by the camera, e.g. "upc_a" or "ean13".
-    # Optional, since it isn't needed to identify the product.
+    # the barcode format, like "upc_a" or "ean13"
     barcode_type = database.Column(database.String(32), nullable=True)
 
-    # When the scan happened.
     scanned_at = database.Column(
         database.DateTime(timezone=True), default=get_current_utc_time, nullable=False
     )
 
     def to_dict(self):
-        """Return the scan as a dictionary that can be sent to the app as JSON."""
+        """Turns the scan into a dictionary to send to the app."""
         return {
             "id": self.id,
             "barcode": self.barcode,
@@ -144,3 +102,76 @@ class Scan(database.Model):
             "scanned_at": format_timestamp_as_iso(self.scanned_at),
         }
 
+
+class Trigger(database.Model):
+    """One thing a user avoids, either a preset like "milk" or their own like "garlic"."""
+
+    __tablename__ = "triggers"
+
+    # stops a user from adding the same trigger twice
+    __table_args__ = (
+        database.UniqueConstraint("user_id", "name", name="unique_trigger_per_user"),
+    )
+
+    id = database.Column(database.Integer, primary_key=True)
+
+    # which user it belongs to
+    user_id = database.Column(
+        database.Integer, database.ForeignKey("users.id"), nullable=False, index=True
+    )
+
+    # the preset key or whatever the user typed, all lowercase
+    name = database.Column(database.String(60), nullable=False)
+
+    created_at = database.Column(
+        database.DateTime(timezone=True), default=get_current_utc_time, nullable=False
+    )
+
+
+class Product(database.Model):
+    """Product info from Open Food Facts, saved so we only look it up once."""
+
+    __tablename__ = "products"
+
+    # the barcode is the product's ID
+    barcode = database.Column(database.String(128), primary_key=True)
+
+    # False if Open Food Facts didn't have it
+    was_found = database.Column(database.Boolean, nullable=False, default=False)
+
+    name = database.Column(database.String(300), nullable=True)
+    brand = database.Column(database.String(300), nullable=True)
+
+    # the full ingredient list from the label
+    ingredients_text = database.Column(database.Text, nullable=True)
+
+    # non-English lists get a Caution, since we only know English ingredient names
+    ingredients_in_english = database.Column(database.Boolean, nullable=False, default=True)
+
+    # allergens like ["en:milk"] and "may contain" warnings like ["en:peanuts"]
+    allergen_tags = database.Column(database.JSON, nullable=False, default=list)
+    may_contain_tags = database.Column(database.JSON, nullable=False, default=list)
+
+    # link to a small photo of the package
+    image_url = database.Column(database.String(500), nullable=True)
+
+    # what kind of product it is, from general to specific, like
+    # ["Spreads", "Sweet spreads", "Chocolate spreads"] (used to find safer swaps)
+    # None means we looked it up before we started saving categories
+    category_names = database.Column(database.JSON, nullable=True)
+
+    # when we last looked it up
+    fetched_at = database.Column(
+        database.DateTime(timezone=True), default=get_current_utc_time, nullable=False
+    )
+
+    def to_dict(self):
+        """Turns the product into a dictionary to send to the app."""
+        return {
+            "barcode": self.barcode,
+            "was_found": self.was_found,
+            "name": self.name,
+            "brand": self.brand,
+            "ingredients_text": self.ingredients_text,
+            "image_url": self.image_url,
+        }

@@ -7,10 +7,12 @@ diabetes, or a food allergy. Eventually it will also save a list of foods
 that are safe for you and suggest recipes made only from ingredients you can
 actually eat.
 
-**Where things stand right now:** I have a working prototype where you can
-create an account, log in, scan a barcode with your phone's camera, and have
-your scans saved to a database. Ingredient lookup and trigger matching are
-what I'm working on next for the midterm MVP.
+**Where things stand right now (midterm MVP):** you can create an account,
+pick what you need to avoid, and scan a product (or type its barcode). The app
+looks up the ingredients and tells you **Avoid**, **Caution**, or **Safe**,
+with the exact ingredient that caused it. If something's a no, it can suggest
+**safer swaps**: similar products that are safe for you. Every scan is saved to
+your history. Next up are a safe foods list and recipe suggestions.
 
 > **Note:** SafeBite is meant to make reading labels faster, not to replace
 > them or give medical advice. Always check the actual label, and talk to
@@ -31,8 +33,10 @@ what I'm working on next for the midterm MVP.
 - [Testing](#testing)
 - [API routes](#api-routes)
 - [Database](#database)
-- [Next feature: ingredient lookup](#next-feature-ingredient-lookup)
+- [How a verdict is decided](#how-a-verdict-is-decided)
+- [Trying it out](#trying-it-out)
 - [Roadmap](#roadmap)
+- [Code review feedback](#code-review-feedback)
 - [Problems I've run into](#problems-ive-run-into)
 - [Limitations](#limitations)
 - [Use of AI tools](#use-of-ai-tools)
@@ -81,28 +85,33 @@ calculate carbs or insulin, or help in an emergency.
 
 ### Working now
 
-- **Create an account and log in.** You stay logged in even after closing
-  the app.
-- **Scan barcodes** with the phone camera. It reads the barcode types used
-  on grocery products (UPC-A, UPC-E, EAN-13, EAN-8, Code 128).
-- **Scan history.** Every scan is saved to your account and shows up in a
-  "Recent scans" list. Since it's stored in the database, it's still there
-  if you log out and back in.
-
-### Planned for the midterm MVP
-
-- **Ingredient lookup:** show the product's name and ingredients after a
-  scan.
-- **Health profile:** pick your conditions and add the ingredients you need
-  to avoid.
-- **Match and flag:** compare the ingredients to your profile and show
-  **Avoid**, **Caution**, or **Safe**, plus *which* ingredient caused it.
+- **Accounts.** Create an account and log in. You stay logged in even after
+  closing the app.
+- **Health profile.** Tap chips to pick what you avoid, grouped into the nine
+  major allergens, sugars and sweeteners (often watched with diabetes), and
+  commonly reported IBD triggers. You can also type in your own, like
+  "cinnamon." Changes save automatically.
+- **Scanning.** Point the camera at a barcode (UPC-A, UPC-E, EAN-13, EAN-8,
+  Code 128), or type the numbers if the barcode won't scan.
+- **Ingredient lookup.** The backend looks up the product in Open Food Facts
+  and shows its name, brand, photo, and full ingredient list.
+- **Match and flag.** Each scan gets a verdict, **Avoid**, **Caution**, or
+  **Safe**, with the exact reason, like "Contains whey (a milk ingredient)."
+  It catches ingredients hiding under other names and treats "may contain"
+  warnings as Caution.
+- **History.** Every scan is saved with its verdict. Tap one to see why. If
+  you change your profile, your old scans get re-checked automatically.
+- **New users start on their profile**, so they set up what they avoid before
+  their first scan.
+- **Safer swaps.** On an Avoid or Caution, tap "Find safer swaps" to see
+  similar products (same kind of food) that come back Safe for you. Tap one to
+  check it yourself. This was my classmate Miguel's suggestion from code review.
 
 ### Planned after midterm
 
 - A **safe foods list** you can save products to.
 - **Recipe suggestions** that leave out your triggers.
-- **Manual entry** for when a product can't be found.
+- **Typing in an ingredient list** for products that aren't in the database.
 
 ### Stretch goals (if I have time)
 
@@ -134,7 +143,10 @@ calculate carbs or insulin, or help in an emergency.
 | Password safety | Werkzeug (comes with Flask) | Passwords are stored as one-way hashes, never as the actual password. |
 | Settings | python-dotenv | Keeps private settings, like my secret key, in a `.env` file that doesn't go on GitHub. |
 | Testing | pytest | Runs automated tests on the backend. |
-| Ingredient data (next) | Open Food Facts API | It's a free, open food database you can search by barcode, and it doesn't need an API key. Still testing how good its coverage is. |
+| Ingredient data | Open Food Facts API | It's a free, open food database you can search by barcode, and it doesn't need an API key. |
+| Calling Open Food Facts | requests (Python) | The standard way to call another website's API from Python. |
+| Icons | @expo/vector-icons (Ionicons) | Comes with Expo, so the tab bar and verdict icons work in Expo Go with no setup. |
+| Database changes | Flask-Migrate (Alembic) | Lets me change tables without wiping the database. Each change is a small file in `backend/migrations/`. |
 
 ### Other software I use
 
@@ -172,13 +184,17 @@ could mess with the app and see other people's data.
 
 ### What happens when you scan something
 
-1. The camera reads the barcode.
+1. The camera reads the barcode (or you type it in).
 2. The camera actually reads the same barcode many times per second, so the
-   app uses a "lock" to only save it once.
+   app uses a "lock" to only check it once.
 3. The app sends the barcode and your token to Flask.
-4. Flask figures out who you are from the token and saves the scan under
-   your account in PostgreSQL.
-5. The app shows "Saved to your history" and adds it to your list.
+4. Flask checks the `products` table. If it's never seen this barcode, it asks
+   Open Food Facts and saves the answer, so the next scan of that product is
+   instant.
+5. The matching engine (`services/matching.py`) compares the ingredients to
+   your triggers and decides Avoid, Caution, or Safe.
+6. Flask saves the scan under your account and sends everything back.
+7. The app shows the verdict, the reasons, and the product.
 
 ### How the app finds my laptop
 
@@ -201,7 +217,14 @@ safebite/
 ├── backend/               Python + Flask server
 │   ├── app.py             All the API routes and the server setup
 │   ├── models.py          The database tables and password hashing
-│   ├── test_app.py        10 automated tests
+│   ├── migrations/        Every change to the tables, in order
+│   ├── services/
+│   │   ├── matching.py    The match and flag engine and preset triggers
+│   │   └── food_lookup.py Looks up and searches Open Food Facts
+│   ├── test_app.py        Tests for the API routes
+│   ├── test_matching.py   Tests for every verdict rule
+│   ├── test_food_lookup.py Tests for reading Open Food Facts responses
+│   ├── test_migrations.py Tests that migrations build the right tables
 │   ├── requirements.txt   Python packages to install
 │   └── .env.example       Template for private settings
 │
@@ -214,9 +237,20 @@ safebite/
         ├── api.js         Every request the app sends to the backend
         ├── config.js      Figures out the backend's address
         ├── theme.js       Colors
+        ├── components/
+        │   ├── ScanResult.js      Verdict banner, product, reasons, ingredients
+        │   ├── SaferSwaps.js      "Find safer swaps" and the list of swaps
+        │   ├── CameraScanner.js   The live camera and aiming frame
+        │   ├── TypeBarcodeBox.js  The "type a barcode" box
+        │   ├── PanelMessage.js    Messages on the dark scan panel
+        │   ├── TabBar.js          Scan / History / Profile tabs
+        │   ├── VerdictBadge.js    Small colored verdict pill
+        │   └── ScreenHeader.js    Title at the top of each tab
         └── screens/
             ├── AuthScreen.js      Login and create account
-            └── ScannerScreen.js   Camera, scan result, and recent scans
+            ├── ScannerScreen.js   Camera or typed barcode, then the result
+            ├── HistoryScreen.js   Past scans with verdicts
+            └── ProfileScreen.js   What you avoid, plus your account
 ```
 
 ---
@@ -263,6 +297,10 @@ python3 -c "import secrets; print(secrets.token_hex(32))"
 open -e .env
 ```
 
+While `.env` is open, set `OPEN_FOOD_FACTS_CONTACT` to your email. Open Food
+Facts asks every app to include a contact so they can reach you if something
+goes wrong.
+
 **3. Install the app's packages**
 
 ```bash
@@ -283,7 +321,9 @@ source .venv/bin/activate
 python app.py
 ```
 
-You should see `Running on http://0.0.0.0:5001`. If your Mac asks whether
+On startup it runs any database migrations that haven't run yet, so you'll
+see a few `Running upgrade` lines the first time. Then you should see
+`Running on http://0.0.0.0:5001`. If your Mac asks whether
 Python can accept incoming connections, click **Allow**, or your phone won't
 be able to reach it.
 
@@ -357,19 +397,29 @@ source .venv/bin/activate
 pytest
 ```
 
-All 10 tests should pass. They use a temporary database, so they don't touch
-real data. They check:
+All 59 tests should pass. They use a temporary database and a fake Open Food
+Facts, so they don't touch real data or need the internet. They check:
 
-- Sign-up rules (valid email, password at least 8 characters, no duplicate
-  emails)
-- Logging in with the right and wrong password
-- That you can't use protected routes without logging in
-- Saving scans and listing them in the right order
-- That one user can't see another user's scans
+- **Accounts:** sign-up rules, logging in with the right and wrong password,
+  and that you can't use protected routes without logging in.
+- **The matching engine:** every verdict rule, including hidden names (whey
+  counts as milk), look-alikes that *shouldn't* match (cocoa butter isn't
+  dairy, buckwheat isn't wheat), "may contain" warnings, and missing or
+  non-English data always giving Caution instead of Safe.
+- **Profiles:** saving, cleaning up names, and rejecting bad input.
+- **Scanning:** verdicts come back with each scan, products are only looked up
+  once, history updates when the profile changes, and a scan still saves if
+  Open Food Facts is down.
+- **Open Food Facts:** reading their response format, "not found," network
+  errors, and searching for similar products.
+- **Safer swaps:** only Safe products get suggested, it tries a broader
+  category if nothing's safe, and it handles no profile, unknown products, and
+  the search being down.
+- **Migrations:** they build exactly the same tables as `models.py`, and older
+  databases get upgraded without losing any data.
 
-When I build the matching engine, it's going to need a lot more tests,
-because telling someone a product is **Safe** when it isn't would be the worst
-possible bug in this app.
+The matching tests are the most important ones, because telling someone a
+product is **Safe** when it isn't would be the worst possible bug in this app.
 
 ---
 
@@ -381,8 +431,11 @@ possible bug in this app.
 | POST | `/api/register` | No | Creates an account and returns a token |
 | POST | `/api/login` | No | Logs in and returns a token |
 | GET | `/api/me` | Yes | Returns the logged-in user |
-| POST | `/api/scans` | Yes | Saves a scanned barcode |
-| GET | `/api/scans` | Yes | Returns your 20 most recent scans |
+| GET | `/api/profile` | Yes | Your triggers, plus the preset options to pick from |
+| PUT | `/api/profile` | Yes | Replaces your list of triggers |
+| POST | `/api/scans` | Yes | Looks up a barcode, checks it against your triggers, and saves it |
+| GET | `/api/scans` | Yes | Your 20 most recent scans, each with a verdict |
+| GET | `/api/products/<barcode>/swaps` | Yes | Up to 3 similar products that are Safe for you |
 
 Errors always come back as `{"error": "message"}`, so the app can just show
 the message to the user.
@@ -391,7 +444,7 @@ the message to the user.
 
 ## Database
 
-There are two tables right now:
+There are four tables:
 
 **users**
 
@@ -412,41 +465,107 @@ There are two tables right now:
 | `barcode_type` | The barcode format, like `upc_a` |
 | `scanned_at` | When it was scanned |
 
-Tables I'm planning to add later: `products` (cached ingredient info),
-`triggers` (each user's ingredients to avoid), `ingredient_synonyms` (other
-names for the same ingredient, like whey for milk), `saved_foods`, and
-`recipes`.
+**triggers**
+
+| Column | What it stores |
+|---|---|
+| `id` | Unique number for each trigger |
+| `user_id` | Which user avoids it |
+| `name` | A preset key like `milk`, or the user's own text like `cinnamon` |
+| `created_at` | When it was added |
+
+**products** (saved answers from Open Food Facts)
+
+| Column | What it stores |
+|---|---|
+| `barcode` | The barcode (the table's main key) |
+| `was_found` | Whether Open Food Facts had the product |
+| `name`, `brand` | What the product is |
+| `ingredients_text` | The full ingredient list |
+| `ingredients_in_english` | Whether the list is in English |
+| `allergen_tags` | Allergens Open Food Facts lists, like `en:milk` |
+| `may_contain_tags` | "May contain" warnings, like `en:peanuts` |
+| `image_url` | A small photo of the front of the package |
+| `category_names` | What kind of food it is, general to specific, like `["Spreads", "Hazelnut spreads"]` (used for safer swaps) |
+| `fetched_at` | When it was looked up |
+
+Verdicts aren't stored. They're worked out every time from the saved product
+and your current triggers, so your history always matches your profile. The
+other names for each ingredient (like whey for milk) live in
+`services/matching.py` instead of a table, because they're the same for every
+user.
+
+Tables I'm planning to add later: `saved_foods` and `recipes`.
+
+### Changing the database (migrations)
+
+The tables are built by **migrations** (Flask-Migrate), not all at once. Each
+file in `backend/migrations/versions/` is one change, in order:
+
+1. `0001_first_tables`: users and scans (the prototype)
+2. `0002_triggers_and_products`: triggers and products (the midterm MVP)
+3. `0003_product_categories`: adds `category_names` for safer swaps
+
+`python app.py` runs any that haven't run yet, so pulling new code never means
+starting the database over. Databases made before I added migrations get
+recognized automatically, and the missing steps get added on top.
+
+When I change a table in `models.py`, I make a new migration:
+
+```bash
+cd backend
+source .venv/bin/activate
+flask --app app db migrate -m "say what changed"
+```
+
+Then I look over the new file in `migrations/versions/` before running the
+server. `flask --app app db check` tells you if the models and migrations
+don't match.
 
 ---
 
-## Next feature: ingredient lookup
+## How a verdict is decided
 
-This is what I'm building next. When you scan a barcode, the app will show
-the product's name and ingredients instead of just the barcode number.
+This happens in `backend/services/matching.py`. Two rules guide everything:
 
-**Why this is next:** everything else in the MVP depends on having ingredient
-data. It's also the biggest thing I don't know yet, which is how many real
-products the database actually has.
+1. **When unsure, say Caution, not Safe.** Missing a trigger is way worse than
+   showing an extra warning.
+2. **Always explain why**, so the person can make the final call.
 
-**What I'm going to use:**
+| Verdict | When it's given |
+|---|---|
+| **Avoid** | An ingredient matches one of your triggers, or Open Food Facts lists it as an allergen. |
+| **Caution** | The label says "may contain" or "made in a facility with" one of your triggers, or the product isn't in the database, has no ingredient list, or the list isn't in English. |
+| **Safe** | There's a complete ingredient list and nothing on it matches your triggers. |
+| **Not checked** | You haven't added any triggers yet. |
 
-- **Open Food Facts API** for the product data. It's free, doesn't need a
-  key, and asks apps to identify themselves in each request, so SafeBite will
-  send its name and a contact email.
-- **Python's `requests` library** in Flask to call the API.
-- **A new `products` table** in PostgreSQL to save each product after the
-  first lookup, so scanning it again is faster.
-- **An updated result card** in `ScannerScreen.js` to show the name and
-  ingredients, or "We couldn't find this product."
-- **pytest with fake API responses**, so the tests don't need internet.
+**How matching works:** each preset trigger has a list of other names it can
+show up under. For example, milk also matches whey, casein, butter, and
+cheese. Some triggers also have look-alikes to ignore first, like "cocoa
+butter" (not dairy), "coconut milk," "buckwheat" (not wheat), and "water
+chestnut" (not a tree nut). Words are matched whole, so "malt" doesn't match
+"maltodextrin," and plurals work, so "egg" also matches "eggs."
 
-**How I'll know it's done:**
+These lists are a good start, not a complete medical reference.
 
-- I can scan a real product and see its name and ingredients on my phone.
-- Products that aren't found show a clear message instead of crashing.
-- There are tests for found, not found, and missing ingredient lists.
-- I'll scan around 20 products from my own kitchen and keep track of how many
-  are found, so I know if I need a backup plan like manual entry.
+---
+
+## Trying it out
+
+Here's a quick walkthrough that shows every feature:
+
+1. **Create an account.** You land on your profile. Pick a few triggers, like
+   Milk and Wheat & gluten, and type in one of your own.
+2. **Scan something with milk or wheat** to get an **Avoid**, with the exact
+   ingredient named.
+3. **Scan something plain**, like rice cakes, to get **Safe**.
+4. **Tap "Type a barcode instead"** and enter a made-up barcode, like
+   `99999999999`. It isn't in the database, so you get **Caution**.
+5. **Open History** and tap a scan to see why it got its verdict.
+6. **Remove a trigger** in your profile, then go back to History. The verdicts
+   update right away.
+7. **On an Avoid, tap "Find safer swaps"** to see similar products that are
+   Safe for you, then tap one to check it.
 
 ---
 
@@ -462,24 +581,66 @@ products the database actually has.
 - [ ] Push it to GitHub
 
 ### Phase 2: Midterm MVP
-- [ ] Ingredient lookup with Open Food Facts
-- [ ] Health profile screen
-- [ ] Ingredient synonyms
-- [ ] Match and flag (Avoid / Caution / Safe with reasons)
-- [ ] Tests for the matching logic
+- [x] Ingredient lookup with Open Food Facts
+- [x] Health profile screen
+- [x] Ingredient synonyms
+- [x] Match and flag (Avoid / Caution / Safe with reasons)
+- [x] Tests for the matching logic
+- [x] Type a barcode when it won't scan
+- [x] Tab navigation and a History screen with verdicts
+- [x] Credit Open Food Facts in the app
 
 ### Phase 3: After midterm
 - [ ] Safe foods list
 - [ ] Recipe suggestions
-- [ ] Manual entry
+- [ ] Type in an ingredient list for products that aren't in the database
 - [ ] Delete account option
-- [ ] Credit Open Food Facts in the app
+- [x] Safer swaps (from code review)
+- [x] Code review cleanup: `.gitignore`, one login helper, smaller scanner
+  files, database migrations
 
 ### Phase 4: Final
 - [ ] Put the backend on a cloud host with HTTPS
 - [ ] Standalone app build so demos don't depend on Wi-Fi
 - [ ] Test it with people who actually have chronic illnesses
 - [ ] Accessibility check (screen readers, text size, contrast)
+
+---
+
+## Code review feedback
+
+My classmate Miguel reviewed the project. Here's what he suggested and what I
+changed:
+
+| Miguel's suggestion | What I did |
+|---|---|
+| Add a `.gitignore` for `.env`, `node_modules`, and `.venv` before anything private gets committed | The project has one (it's a hidden file, so it didn't show up in my GitHub upload). I made it stricter and added the steps below to make sure it's actually in the repo. |
+| The routes that need a login all start with the same few lines to look up the user | Moved them into one `@login_required` helper in `app.py`. Now each route just gets the user handed to it. |
+| Split `ScannerScreen.js` into smaller components before adding ingredient results | Pulled out `CameraScanner`, `TypeBarcodeBox`, and `PanelMessage`. `ScannerScreen.js` now just keeps track of which step it's on. |
+| Use Flask-Migrate so changing the database doesn't mean starting over | Added it, with migrations that match how the tables actually grew. Old databases upgrade automatically and keep their data. |
+| Feature idea: when something's flagged, show similar products that are safe | Built it as **safer swaps**. |
+
+### Making sure secrets stay off GitHub
+
+`.gitignore` starts with a dot, so Finder and GitHub's drag-and-drop upload
+both skip it. Upload with git instead, from the `safebite` folder:
+
+```bash
+git add .gitignore
+git status        # .env, node_modules, and .venv should NOT be listed
+git commit -m "Add .gitignore"
+git push
+```
+
+To check whether a secret already got uploaded:
+
+```bash
+git ls-files | grep -E "\.env$|node_modules|\.venv"
+```
+
+If that prints `backend/.env`, remove it with `git rm --cached backend/.env`,
+commit, and make a new `JWT_SECRET_KEY`, since the old one is still in the
+repo's history.
 
 ---
 
@@ -500,6 +661,24 @@ used it before, but I learned SQLite is a single file that isn't really made
 for lots of users writing to it at the same time over a network. PostgreSQL
 is the standard choice for a multi-user backend, so I switched to that.
 
+**A library update broke the database connection.** SQLAlchemy 2.1 changed
+which PostgreSQL driver it uses by default, so a fresh install crashed with
+"No module named 'psycopg'." The fix was to name the driver explicitly in
+`create_app()`, so it works no matter which version gets installed.
+
+**PostgreSQL kept being a pain when tables changed.** Before migrations, a new
+table or column meant either hoping `create_all()` would handle it (it only
+adds new tables, never new columns) or wiping the database. Flask-Migrate
+fixed that. Each change is now a small file, and the server applies whatever
+hasn't run yet.
+
+**Some presets were saving as the wrong thing.** Text cleanup turns
+underscores into spaces (Open Food Facts writes allergens like `_milk_`), but
+it was also running on preset keys, so `garlic_onion` got saved as "garlic
+onion" and only matched that exact phrase. Clicking through the app caught
+it. Now presets are checked before cleanup, and there's a test that checks
+every preset.
+
 ---
 
 ## Limitations
@@ -513,6 +692,8 @@ is the standard choice for a multi-user backend, so I switched to that.
   app can't flag it.
 - **It checks if an ingredient is there, not how much.** It won't count carbs
   or sugar grams.
+- **The ingredient name lists aren't complete.** They cover the common names,
+  but a rare name for an ingredient could be missed.
 - **Security shortcuts in the prototype:** it uses plain `http` instead of
   `https`, there's no limit on login attempts, and there's no password reset
   yet. These need to be fixed before real people use it.
@@ -524,8 +705,10 @@ is the standard choice for a multi-user backend, so I switched to that.
 I used AI tools, including **Anthropic's Claude Opus** and **OpenAI's
 models**, to build quick prototypes and test ideas before committing to
 changes in the actual project. The starter prototype in this repo (login,
-scanner, and scan history) was generated with AI help, and I'm setting it up,
-reading through it, and testing it before building on top of it.
+scanner, and scan history), the midterm MVP features (ingredient lookup,
+health profile, match and flag, and the new screens), and the changes from my
+code review (safer swaps, migrations, and the cleanup) were built with AI help.
+I'm setting them up, reading through them, and testing them myself.
 
 I also used AI to compare technical options (like SQLite vs PostgreSQL), check
 that the technical claims in my proposal were accurate, and help draft my
@@ -539,11 +722,11 @@ final project.
 
 ## Credits
 
-- **Author:** [Your name]
-- **Course:** [Course name and number], [Semester and year]
+- **Author:** Jesse Ortiz
+- **Course:** CSCI 490 Capstone, [Semester and year]
+- **Code review:** Miguel
 - **Instructor:** [Instructor name]
 
 Thanks to [Open Food Facts](https://world.openfoodfacts.org) for building a
 free, open food database, and to everyone living with a chronic illness who
 deals with this every day.
-

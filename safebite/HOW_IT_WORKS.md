@@ -1,14 +1,13 @@
-# How the SafeBite prototype works
+# How SafeBite works
 
-This prototype proves three things SafeBite's MVP depends on:
+The midterm MVP does four things:
 
-1. The phone camera can reliably read grocery barcodes.
-2. People can have their own accounts, with passwords handled safely.
-3. The phone, the Flask server, and the PostgreSQL database can all talk to
-   each other, so a scan on the phone ends up saved under the right user.
-
-It does not yet look up ingredients or flag triggers. Those come next, and
-they plug into exactly the pieces built here.
+1. People can have their own accounts, with passwords handled safely.
+2. Each person keeps a profile of the ingredients they need to avoid.
+3. The phone camera reads a grocery barcode (or the person types it in).
+4. The backend looks up the product's ingredients, compares them to that
+   person's profile, and returns **Avoid**, **Caution**, or **Safe** with the
+   reasons. Every scan is saved to their history.
 
 ---
 
@@ -18,6 +17,7 @@ they plug into exactly the pieces built here.
 flowchart LR
     A["📱 Phone app<br/>React Native + Expo"] -- "HTTP requests (JSON)<br/>+ login token" --> B["🐍 API server<br/>Python + Flask"]
     B -- "SQL queries" --> C[("🐘 Database<br/>PostgreSQL")]
+    B -- "barcode lookup<br/>(first scan only)" --> D["🌍 Open Food Facts"]
     C -- rows --> B
     B -- "JSON responses" --> A
 ```
@@ -71,11 +71,49 @@ can't be used to find out which emails have accounts.
    one. A ref is used instead of state because state updates aren't
    instant, and a second scan could slip through in the gap.
 3. The app sends `POST /api/scans` with the barcode and its format, plus
-   the login token in the `Authorization` header.
-4. Flask reads the token to figure out which user is asking, then saves a
-   row in the `scans` table linked to that user.
-5. The app shows "Saved to your history" and adds the scan to the top of
-   the Recent scans list.
+   the login token in the `Authorization` header. Typing a barcode on the
+   Scan tab sends the exact same request.
+4. Flask reads the token to figure out which user is asking.
+5. `services/food_lookup.py` checks the `products` table. If this barcode
+   has never been looked up, it asks Open Food Facts and saves the answer,
+   including "not found." Saved products are reused, so the second scan of
+   anything is instant and still works if Open Food Facts is down.
+6. `services/matching.py` compares the ingredients to the user's triggers
+   and builds the verdict and reasons (see the README's "How a verdict is
+   decided").
+7. Flask saves a row in the `scans` table and sends back the scan, the
+   product, the verdict, and the reasons.
+8. The app shows them in `ScanResult.js`: a colored verdict banner, the
+   product, a "Why" list, and the ingredients.
+
+### Setting up a profile
+
+The Profile tab asks `GET /api/profile` for the user's triggers and the
+preset options, and draws each preset as a chip. Tapping a chip or adding
+your own sends the *whole* list with `PUT /api/profile`, which replaces the
+old one. It saves right away, so there's no Save button to forget. If a save
+fails, the list goes back to the last version that saved.
+
+### Viewing history
+
+`GET /api/scans` returns the 20 newest scans. Verdicts aren't stored. They're
+worked out fresh from the saved product and the user's *current* triggers,
+so changing your profile updates your whole history.
+
+### Finding safer swaps
+
+On an Avoid or Caution result, `SaferSwaps.js` shows a "Find safer swaps"
+button. Tapping it calls `GET /api/products/<barcode>/swaps`:
+
+1. Flask looks at the product's saved categories (general to specific, like
+   `["Spreads", "Hazelnut spreads"]`) and searches Open Food Facts for other
+   products in the most specific one, sold in the US, most-scanned first.
+2. Each result gets saved to `products` (so scanning it later is instant) and
+   run through the same matching engine as a normal scan.
+3. Only the ones that come back **Safe** for this user get sent back, up to 3.
+   If none are safe, it tries one category broader before giving up.
+
+Tapping a swap checks it like a normal scan, so it shows up in history too.
 
 ### Reopening the app
 
@@ -94,8 +132,11 @@ app deletes it and shows the login screen.
 | POST | `/api/register` | No | Creates an account, returns a token |
 | POST | `/api/login` | No | Checks credentials, returns a token |
 | GET | `/api/me` | Yes | Returns the logged-in user |
-| POST | `/api/scans` | Yes | Saves one scanned barcode |
-| GET | `/api/scans` | Yes | Returns your 20 most recent scans |
+| GET | `/api/profile` | Yes | Your triggers, plus the preset options |
+| PUT | `/api/profile` | Yes | Replaces your list of triggers |
+| POST | `/api/scans` | Yes | Looks up a barcode, checks it, and saves it |
+| GET | `/api/scans` | Yes | Your 20 most recent scans, with verdicts |
+| GET | `/api/products/<barcode>/swaps` | Yes | Up to 3 similar products that are Safe for you |
 
 Every error comes back in one shape, `{"error": "message"}`, with a
 standard HTTP status code (400 bad input, 401 not logged in, 409 email
@@ -107,6 +148,22 @@ text is written for users to read.
 ```mermaid
 erDiagram
     users ||--o{ scans : "has many"
+    users ||--o{ triggers : "avoids"
+    products ||--o{ scans : "matched by barcode"
+    triggers {
+        int id PK
+        int user_id FK
+        string name "preset key or own text"
+    }
+    products {
+        string barcode PK
+        boolean was_found
+        string name
+        text ingredients_text
+        json allergen_tags
+        json may_contain_tags
+        json category_names
+    }
     users {
         int id PK
         string email "unique"
@@ -129,6 +186,11 @@ The tables are defined as Python classes in `backend/models.py`. A library
 called SQLAlchemy translates them into PostgreSQL tables and turns Python
 code like `Scan.query.filter_by(user_id=5)` into SQL, so there's no
 hand-written SQL in the project yet.
+
+The tables themselves get built and changed by **migrations** (Flask-Migrate)
+in `backend/migrations/versions/`, one small file per change. `python app.py`
+runs whichever ones haven't run yet, so the database never has to be wiped
+when a table changes.
 
 ---
 
@@ -168,9 +230,15 @@ login attempts; there's no "forgot password" flow.
 
 | File | What's in it |
 |---|---|
-| `app.py` | All six API routes, token setup, and `create_app()`, which wires Flask, the database, and JWT together |
-| `models.py` | The `User` and `Scan` tables, plus password hashing helpers |
-| `test_app.py` | 10 automated tests: sign-up rules, login success and failure, token checks, scans saving correctly, users not seeing each other's scans |
+| `app.py` | All nine API routes, the `@login_required` helper they share, token setup, `create_app()`, and `prepare_database()`, which runs migrations |
+| `migrations/` | Every change to the tables, in order (Flask-Migrate) |
+| `models.py` | The `User`, `Scan`, `Trigger`, and `Product` tables, plus password hashing helpers |
+| `services/matching.py` | The preset triggers, their other names and look-alikes, and the rules for Avoid / Caution / Safe |
+| `services/food_lookup.py` | Asks Open Food Facts about a barcode, searches for similar products, and saves what comes back |
+| `test_app.py` | Tests for accounts, profiles, scanning, caching, and history |
+| `test_matching.py` | A test for every verdict rule |
+| `test_food_lookup.py` | Tests for reading Open Food Facts' responses and searches |
+| `test_migrations.py` | Tests that migrations match the models and upgrade old databases safely |
 | `requirements.txt` | Python packages to install |
 | `.env.example` | Template for your private settings (database address, token secret) |
 
@@ -178,9 +246,19 @@ login attempts; there's no "forgot password" flow.
 
 | File | What's in it |
 |---|---|
-| `App.js` | The root. Checks for a saved login on launch and shows either the login screen or the scanner |
+| `App.js` | The root. Checks for a saved login on launch, then shows the login screen or the three tabs |
 | `src/screens/AuthScreen.js` | Login and create-account form (one screen, two modes) |
-| `src/screens/ScannerScreen.js` | Camera, scan result card, and Recent scans list |
+| `src/screens/ScannerScreen.js` | Keeps track of the scan steps (ready, checking, done, failed) and shows the right piece for each |
+| `src/screens/HistoryScreen.js` | Recent scans with verdict badges; tap to see why; pull to refresh |
+| `src/screens/ProfileScreen.js` | Trigger chips, your own triggers, account, and log out |
+| `src/components/ScanResult.js` | The verdict banner, product, reasons, and ingredients |
+| `src/components/SaferSwaps.js` | The "Find safer swaps" button and the list of swaps |
+| `src/components/CameraScanner.js` | The live camera and its aiming frame |
+| `src/components/TypeBarcodeBox.js` | The "type a barcode" box and its checks |
+| `src/components/PanelMessage.js` | Messages on the dark scan panel, like "Checking ingredients…" |
+| `src/components/TabBar.js` | The Scan / History / Profile bar |
+| `src/components/VerdictBadge.js` | The small colored verdict pill in History |
+| `src/components/ScreenHeader.js` | The title at the top of each tab |
 | `src/api.js` | Every call to the backend, in one place, with shared error handling |
 | `src/config.js` | Figures out the backend's address (see below) |
 | `src/theme.js` | Colors, matching the pitch deck |
@@ -196,16 +274,9 @@ type in. You can override it with `MANUAL_BACKEND_URL` in `config.js`, or by sta
 
 ## Where this goes next
 
-The pieces for the rest of the MVP attach directly to what's here:
-
-- **Ingredient lookup.** When a scan comes in, Flask looks the barcode up
-  in an open food database and stores the ingredient list. This is a new
-  step inside the existing `POST /api/scans` route.
-- **Trigger profile.** A new `trigger_ingredients` table linked to `users`,
-  with a screen in the app to pick conditions and add personal triggers.
-- **Match and flag.** A Python function that compares a product's
-  ingredients to the user's triggers and returns safe / caution / avoid.
-  The scanner's result card already has a place for it to show up.
-- **History.** Already working. It will show the verdict next to each scan
-  once match and flag exists.
-
+- **Safe foods list.** A `saved_foods` table and a "Save" button on Safe
+  results.
+- **Recipe suggestions.** A small set of recipes tagged by ingredient,
+  filtered with the same matching engine used for scans.
+- **Typing in an ingredient list** for products Open Food Facts doesn't have.
+- **A hosted backend** with HTTPS, so the app works without a laptop.

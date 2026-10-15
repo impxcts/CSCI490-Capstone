@@ -1,0 +1,8 @@
+migrations/ - the history of how the database tables changed.
+
+Each file in versions/ is one change. "python app.py" runs any that haven't
+run yet, so you don't have to start the database over when a table changes.
+
+Changed a table in models.py? Make a new migration with:
+    flask --app app db migrate -m "say what changed"
+then look over the new file in versions/ before you run the server.

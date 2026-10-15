@@ -1,0 +1,23 @@
+# .gitignore - files git should never upload to GitHub
+
+# secrets (your real .env has your secret key in it!)
+.env
+.env.*
+!.env.example
+
+# Python
+.venv/
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+*.db
+
+# Node / Expo
+node_modules/
+.expo/
+dist/
+web-build/
+
+# Mac junk
+.DS_Store

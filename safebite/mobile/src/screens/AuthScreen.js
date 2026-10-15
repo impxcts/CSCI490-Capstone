@@ -1,11 +1,5 @@
-/**
- * AuthScreen.js - The login and create-account screen.
- *
- * One screen handles both, with a link at the bottom to switch between
- * "Log in" mode and "Create account" mode. When the server accepts the
- * email and password, this screen calls onLoginSuccess (from App.js),
- * which saves the login and switches to the scanner.
- */
+// AuthScreen.js - the login screen. It does both "Log in" and "Create account",
+// with a link at the bottom to switch between them.
 
 import { useState } from "react";
 import {
@@ -25,43 +19,37 @@ import { api } from "../api";
 import { API_URL } from "../config";
 import { colors } from "../theme";
 
-// Shortest password allowed. Must match MIN_PASSWORD_LENGTH in backend/app.py.
+// shortest password allowed (same as the backend)
 const MIN_PASSWORD_LENGTH = 8;
 
-// The two modes this screen can be in.
+// the two modes this screen can be in
 const LOGIN_MODE = "login";
 const REGISTER_MODE = "register";
 
-/**
- * @param {function} onLoginSuccess  Called with { token, user } after a
- *                                   successful login or sign-up.
- */
+// onLoginSuccess comes from App.js and runs once they're logged in
 export default function AuthScreen({ onLoginSuccess }) {
-  // Which form we're showing: LOGIN_MODE or REGISTER_MODE.
+  // which form we're showing
   const [formMode, setFormMode] = useState(LOGIN_MODE);
 
-  // What the user has typed into each box.
+  // what's typed in each box
   const [emailInput, setEmailInput] = useState("");
   const [passwordInput, setPasswordInput] = useState("");
 
-  // True while waiting for the server. Disables the form so the user
-  // can't submit twice.
+  // true while we wait for the server (stops double taps)
   const [isSubmitting, setIsSubmitting] = useState(false);
 
-  // The error message to show under the form, or "" for none.
+  // error message to show, or "" for none
   const [errorMessage, setErrorMessage] = useState("");
 
   const isRegisterMode = formMode === REGISTER_MODE;
 
-  // Runs when the user taps the main button or presses "go" on the keyboard.
+  // runs when they tap the button or hit "go" on the keyboard
   async function handleSubmit() {
     setErrorMessage(""); // clear any old error
 
     const trimmedEmail = emailInput.trim();
 
-    // Check obvious mistakes on the phone first, so the user gets instant
-    // feedback without waiting on the network. The server checks all of
-    // this again, since it can't trust the app alone.
+    // catch easy mistakes right away (the server double checks these too)
     if (!trimmedEmail || !passwordInput) {
       setErrorMessage("Enter your email and password.");
       return;
@@ -77,18 +65,16 @@ export default function AuthScreen({ onLoginSuccess }) {
         ? await api.register(trimmedEmail, passwordInput)
         : await api.login(trimmedEmail, passwordInput);
 
-      // App.js saves the login and switches to the scanner. This screen
-      // disappears, so we don't need to set isSubmitting back to false.
-      await onLoginSuccess(loginResult);
+      // let App.js know they're logged in (and whether it's a brand new account)
+      await onLoginSuccess({ ...loginResult, isNewAccount: isRegisterMode });
     } catch (requestError) {
-      // The message comes from api.js or the server and is written for
-      // users to read, e.g. "Email or password is incorrect."
+      // show what went wrong, like "Email or password is incorrect."
       setErrorMessage(requestError.message);
       setIsSubmitting(false);
     }
   }
 
-  // Flip between "Log in" and "Create account".
+  // switch between "Log in" and "Create account"
   function toggleFormMode() {
     setFormMode(isRegisterMode ? LOGIN_MODE : REGISTER_MODE);
     setErrorMessage("");
@@ -96,20 +82,17 @@ export default function AuthScreen({ onLoginSuccess }) {
 
   return (
     <SafeAreaView style={styles.screen}>
-      {/* On iPhone, push the form up when the keyboard opens so the
-          password box and button aren't hidden behind it. */}
+      {/* moves the form up when the keyboard opens on iPhone */}
       <KeyboardAvoidingView
         style={styles.fillSpace}
         behavior={Platform.OS === "ios" ? "padding" : undefined}
       >
-        {/* ScrollView lets small phones scroll if the keyboard takes up
-            too much room. "handled" lets taps reach the buttons while the
-            keyboard is open. */}
+        {/* lets small phones scroll, and lets buttons work while the keyboard is open */}
         <ScrollView
           contentContainerStyle={styles.formContainer}
           keyboardShouldPersistTaps="handled"
         >
-          {/* App name and tagline */}
+          {/* app name and tagline */}
           <View style={styles.brandSection}>
             <Text style={styles.appName}>SafeBite</Text>
             <Text style={styles.tagline}>
@@ -121,7 +104,7 @@ export default function AuthScreen({ onLoginSuccess }) {
             {isRegisterMode ? "Create your account" : "Welcome back"}
           </Text>
 
-          {/* Email box */}
+          {/* email box */}
           <Text style={styles.inputLabel}>Email</Text>
           <TextInput
             style={styles.textInput}
@@ -129,17 +112,17 @@ export default function AuthScreen({ onLoginSuccess }) {
             onChangeText={setEmailInput}
             placeholder="you@example.com"
             placeholderTextColor={colors.textSecondary}
-            // Emails shouldn't be auto-capitalized or auto-corrected.
+            // no auto-capitals or autocorrect for emails
             autoCapitalize="none"
             autoCorrect={false}
             keyboardType="email-address"
-            // These let the phone offer saved emails and passwords.
+            // lets the phone fill in saved emails
             textContentType="emailAddress"
             autoComplete="email"
             editable={!isSubmitting}
           />
 
-          {/* Password box */}
+          {/* password box */}
           <Text style={styles.inputLabel}>Password</Text>
           <TextInput
             style={styles.textInput}
@@ -148,29 +131,27 @@ export default function AuthScreen({ onLoginSuccess }) {
             placeholder={isRegisterMode ? "At least 8 characters" : "Your password"}
             placeholderTextColor={colors.textSecondary}
             secureTextEntry // shows dots instead of the letters
-            // "newPassword" lets the phone suggest a strong password when
-            // signing up; "password" fills in a saved one when logging in.
+            // lets the phone suggest or fill in passwords
             textContentType={isRegisterMode ? "newPassword" : "password"}
             autoComplete={isRegisterMode ? "new-password" : "current-password"}
-            // Pressing "go" on the keyboard submits the form.
+            // hitting "go" on the keyboard submits
             onSubmitEditing={handleSubmit}
             returnKeyType="go"
             editable={!isSubmitting}
           />
 
-          {/* Error message, only shown when there is one. accessibilityLiveRegion
-              makes Android screen readers announce it when it appears. */}
+          {/* error message, only if there is one */}
           {errorMessage ? (
             <View style={styles.errorBox} accessibilityLiveRegion="polite">
               <Text style={styles.errorText}>{errorMessage}</Text>
             </View>
           ) : null}
 
-          {/* Main button. Shows a spinner while waiting for the server. */}
+          {/* main button (shows a spinner while waiting) */}
           <Pressable
             style={({ pressed }) => [
               styles.primaryButton,
-              // Fade the button while it's pressed or while submitting.
+              // fade it while pressed or loading
               (pressed || isSubmitting) && styles.primaryButtonFaded,
             ]}
             onPress={handleSubmit}
@@ -186,7 +167,7 @@ export default function AuthScreen({ onLoginSuccess }) {
             )}
           </Pressable>
 
-          {/* Link to switch between logging in and creating an account */}
+          {/* link to switch modes */}
           <Pressable
             onPress={toggleFormMode}
             disabled={isSubmitting}
@@ -200,8 +181,7 @@ export default function AuthScreen({ onLoginSuccess }) {
             </Text>
           </Pressable>
 
-          {/* Shows where the app is looking for the backend. Very helpful
-              when troubleshooting "Can't reach the server" errors. */}
+          {/* shows the server address, handy if it can't connect */}
           <Text style={styles.serverAddressNote}>Server: {API_URL}</Text>
         </ScrollView>
       </KeyboardAvoidingView>
@@ -217,7 +197,7 @@ const styles = StyleSheet.create({
   fillSpace: {
     flex: 1,
   },
-  // flexGrow + justifyContent center the form vertically on tall phones.
+  // centers the form up and down
   formContainer: {
     flexGrow: 1,
     padding: 24,
@@ -257,7 +237,7 @@ const styles = StyleSheet.create({
     borderRadius: 10,
     paddingHorizontal: 14,
     paddingVertical: 13,
-    fontSize: 16, // 16 or larger stops iPhones from zooming in on focus
+    fontSize: 16, // 16+ stops iPhones from zooming in when you tap the box
     color: colors.textPrimary,
     marginBottom: 16,
   },
@@ -278,7 +258,7 @@ const styles = StyleSheet.create({
     paddingVertical: 15,
     alignItems: "center",
     justifyContent: "center",
-    minHeight: 52, // keeps the button the same height when the spinner shows
+    minHeight: 52, // keeps the button the same size when the spinner shows
   },
   primaryButtonFaded: {
     opacity: 0.8,
@@ -289,7 +269,7 @@ const styles = StyleSheet.create({
     fontWeight: "700",
   },
   switchModeButton: {
-    paddingVertical: 16, // a bigger tap target than the text alone
+    paddingVertical: 16, // makes it easier to tap
     alignItems: "center",
   },
   switchModeText: {

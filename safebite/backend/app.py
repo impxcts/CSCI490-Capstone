@@ -1,25 +1,14 @@
 """
-app.py - The SafeBite backend API, built with Flask.
+app.py - All the API routes for SafeBite.
 
-The phone app never talks to the database directly. Instead it sends HTTP
-requests to the routes in this file, and these routes read and write the
-database. That keeps all the rules (like "you can only see your own scans")
-on the server, where users can't change them.
-
-Routes:
-    GET  /api/health     Is the server running?
-    POST /api/register   Create an account. Returns a login token.
-    POST /api/login      Check email + password. Returns a login token.
-    GET  /api/me         Who is logged in?              (login required)
-    POST /api/scans      Save a scanned barcode.        (login required)
-    GET  /api/scans      List my most recent scans.     (login required)
-
-To start the server:  python app.py
+The phone app sends requests here, and these routes read and write the
+database. To start the server, run:  python app.py
 """
 
 import os
 import re
 from datetime import timedelta
+from functools import wraps
 
 from dotenv import load_dotenv
 from flask import Blueprint, Flask, jsonify, request
@@ -29,114 +18,124 @@ from flask_jwt_extended import (
     get_jwt_identity,
     jwt_required,
 )
+from flask_migrate import Migrate, stamp, upgrade
+from sqlalchemy import inspect
 
-from models import Scan, User, database
+from models import Product, Scan, Trigger, User, database
+from services import food_lookup, matching
+from services.food_lookup import get_product
 
-# Read private settings (database address, secret key) from backend/.env
-# into environment variables. If there's no .env file, the defaults in
-# create_app() below are used instead.
+# load the settings from the .env file (database address, secret key, etc.)
 load_dotenv()
 
-
-# ---------------------------------------------------------------------------
-# Settings
-# ---------------------------------------------------------------------------
-
-# A simple check that an email looks like "something@something.something".
-# It doesn't prove the email exists; it just catches obvious typos.
+# quick check that an email looks like name@something.com
 EMAIL_FORMAT_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
-# Shortest password allowed when creating an account.
 MIN_PASSWORD_LENGTH = 8
-
-# Longest barcode we'll save. Real product barcodes are 8-14 digits, so
-# this leaves plenty of room while blocking junk data.
-MAX_BARCODE_LENGTH = 128
-
-# Longest barcode type we'll save. Matches the column size in models.py.
+MAX_BARCODE_LENGTH = 128  # real barcodes are way shorter, this just blocks junk
 MAX_BARCODE_TYPE_LENGTH = 32
+RECENT_SCANS_LIMIT = 20  # how many scans the history shows
+LOGIN_TOKEN_LIFETIME = timedelta(days=7)  # how long you stay logged in
+DEFAULT_PORT = 5001  # not 5000, because Macs use that one for AirPlay
+MAX_SWAPS = 3  # how many safer swaps to suggest
+MAX_SWAP_CATEGORIES_TO_TRY = 2  # the product's most specific category, then one step up
 
-# How many scans GET /api/scans returns.
-RECENT_SCANS_LIMIT = 20
+# the migrations folder (next to this file, so it works no matter where you run it from)
+MIGRATIONS_FOLDER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "migrations")
 
-# How long a login lasts before the user has to log in again.
-LOGIN_TOKEN_LIFETIME = timedelta(days=7)
+# the migrations that match how the database looked before we used migrations
+REVISION_FIRST_TABLES = "0001_first_tables"  # just users and scans
+REVISION_TRIGGERS_AND_PRODUCTS = "0002_triggers_and_products"  # the midterm MVP tables
 
-# Port the server runs on. Not Flask's usual 5000, because macOS uses
-# port 5000 for AirPlay Receiver.
-DEFAULT_PORT = 5001
+# handles database migrations (changing tables without starting the database over)
+migrate = Migrate()
 
-# A Blueprint is a group of routes. Putting all routes under "/api" keeps
-# them separate from anything else the server might serve later.
+# groups all our routes under /api
 api_routes = Blueprint("api", __name__, url_prefix="/api")
 
 
-# ---------------------------------------------------------------------------
-# Helper functions
-# ---------------------------------------------------------------------------
-
 def error_response(message, status_code):
-    """Build an error reply in the one shape the app expects: {"error": "..."}.
-
-    Every error uses this shape so the app only has to handle one format,
-    and it can show the message directly to the user.
-    """
+    """Sends back an error in the {"error": "..."} format the app expects."""
     return jsonify({"error": message}), status_code
 
 
 def read_email_and_password_from_request():
-    """Pull the email and password out of the JSON the app sent.
-
-    The email is trimmed and lowercased so "Sam@Example.com " and
-    "sam@example.com" count as the same account. The password is left
-    exactly as typed, since spaces and capitals matter in passwords.
-    """
-    # silent=True returns None instead of crashing if the body isn't JSON.
+    """Grabs the email and password from what the app sent."""
+    # silent=True means we get None instead of a crash if it isn't JSON
     request_body = request.get_json(silent=True) or {}
+    # clean up the email so "Sam@Example.com " and "sam@example.com" match
     email = str(request_body.get("email", "")).strip().lower()
     password = str(request_body.get("password", ""))
     return email, password
 
 
 def login_success_response(user, status_code=200):
-    """Create a login token for this user and send it back with their info.
-
-    The token (a JWT) is a signed pass that says "this is user #5". The app
-    sends it with every later request, so the server knows who is asking
-    without needing the password again. It's signed with JWT_SECRET_KEY,
-    so it can't be forged or edited without that key.
-    """
+    """Makes a login token for the user and sends it back with their info."""
     login_token = create_access_token(identity=str(user.id))
     return jsonify({"token": login_token, "user": user.to_dict()}), status_code
 
 
 def get_logged_in_user():
-    """Look up the user whose login token came with this request.
-
-    Only works inside a route marked @jwt_required(). Returns None if the
-    account was deleted after the token was issued.
-    """
+    """Figures out who's logged in from the token they sent."""
     user_id = int(get_jwt_identity())
     return database.session.get(User, user_id)
 
 
-# ---------------------------------------------------------------------------
-# Routes that don't need a login
-# ---------------------------------------------------------------------------
+def login_required(route_function):
+    """Put this on any route that needs a login. It hands the route the logged-in user.
+
+    This used to be the same few lines copied at the top of every route,
+    so now it lives in one place.
+    """
+    @wraps(route_function)
+    @jwt_required()  # blocks the request if there's no valid login token
+    def route_with_user(*args, **kwargs):
+        user = get_logged_in_user()
+        # the token is fine but the account is gone (like if it got deleted)
+        if user is None:
+            return error_response("Account not found. Log in again.", 401)
+        return route_function(user, *args, **kwargs)
+
+    return route_with_user
+
+
+def get_trigger_names(user):
+    """Gets the list of things this user avoids, like ["milk", "garlic"]."""
+    user_triggers = Trigger.query.filter_by(user_id=user.id).order_by(Trigger.id).all()
+    return [trigger.name for trigger in user_triggers]
+
+
+def build_profile_response(user):
+    """Sends back the user's triggers plus all the preset options."""
+    return jsonify({
+        "triggers": get_trigger_names(user),
+        "catalog": matching.get_catalog_for_app(),
+    })
+
+
+def build_scan_details(scan, product, trigger_names, lookup_status):
+    """Puts a scan, its product, and its verdict together for the app."""
+    scan_details = scan.to_dict()
+    scan_details["product"] = product.to_dict() if product is not None else None
+    # the verdict gets worked out fresh every time from the user's current triggers
+    scan_details.update(matching.evaluate_product(product, trigger_names, lookup_status))
+    return scan_details
+
+
+# ----- routes you can use without logging in -----
 
 @api_routes.get("/health")
 def health_check():
-    """Let anyone check that the server is up. Useful for troubleshooting."""
+    """Just says the server is running."""
     return jsonify({"status": "ok"})
 
 
 @api_routes.post("/register")
 def register():
-    """Create a new account and log the user in right away."""
+    """Creates a new account and logs them in."""
     email, password = read_email_and_password_from_request()
 
-    # The app checks these too, but the server must check again, since
-    # anyone can send requests to the server without using the app.
+    # the app checks these too, but we double check here
     if not EMAIL_FORMAT_PATTERN.match(email):
         return error_response("Enter a valid email address.", 400)
 
@@ -145,67 +144,53 @@ def register():
             f"Password must be at least {MIN_PASSWORD_LENGTH} characters.", 400
         )
 
+    # make sure the email isn't already taken
     existing_user = User.query.filter_by(email=email).first()
     if existing_user is not None:
-        # 409 = "Conflict": this email is already taken.
         return error_response(
             "An account with that email already exists. Log in instead.", 409
         )
 
+    # save the new user (only the password hash gets stored)
     new_user = User(email=email)
-    new_user.set_password(password)  # stores only the hash
+    new_user.set_password(password)
     database.session.add(new_user)
-    database.session.commit()  # actually writes the row to the database
+    database.session.commit()
 
-    # 201 = "Created".
     return login_success_response(new_user, status_code=201)
 
 
 @api_routes.post("/login")
 def login():
-    """Check an email and password, and return a login token if they match."""
+    """Checks the email and password and logs them in if they match."""
     email, password = read_email_and_password_from_request()
     user = User.query.filter_by(email=email).first()
 
-    # We give the same message whether the email or the password is wrong.
-    # Different messages would let someone use the login form to find out
-    # which emails have SafeBite accounts.
+    # same message either way, so nobody can use this to find out who has an account
     if user is None or not user.check_password(password):
-        # 401 = "Unauthorized".
         return error_response("Email or password is incorrect.", 401)
 
     return login_success_response(user)
 
 
-# ---------------------------------------------------------------------------
-# Routes that need a login
-# @jwt_required() rejects any request without a valid login token before
-# the function even runs.
-# ---------------------------------------------------------------------------
+# ----- routes that need you to be logged in -----
+# @login_required makes sure there's a valid login and passes in the user
 
 @api_routes.get("/me")
-@jwt_required()
-def get_current_user():
-    """Return the logged-in user. The app uses this to check a saved login."""
-    user = get_logged_in_user()
-    if user is None:
-        return error_response("Account not found. Log in again.", 401)
+@login_required
+def get_current_user(user):
+    """Sends back who's logged in. The app uses this to check a saved login."""
     return jsonify({"user": user.to_dict()})
 
 
 @api_routes.post("/scans")
-@jwt_required()
-def save_scan():
-    """Save one scanned barcode to the logged-in user's history."""
-    user = get_logged_in_user()
-    if user is None:
-        return error_response("Account not found. Log in again.", 401)
-
+@login_required
+def save_scan(user):
+    """Looks up a scanned barcode, checks it against the user's triggers, and saves it."""
     request_body = request.get_json(silent=True) or {}
     barcode = str(request_body.get("barcode", "")).strip()
 
-    # The barcode type is optional. Trim it to fit the database column,
-    # and store None (empty) instead of an empty string.
+    # barcode type is optional, so save None if it's empty
     barcode_type = str(request_body.get("barcode_type", "")).strip()
     barcode_type = barcode_type[:MAX_BARCODE_TYPE_LENGTH] or None
 
@@ -215,54 +200,163 @@ def save_scan():
     if len(barcode) > MAX_BARCODE_LENGTH:
         return error_response("That barcode is too long to save.", 400)
 
-    # The user comes from the login token, never from the request body.
-    # That way nobody can save scans into someone else's account.
+    # get the product info (None means Open Food Facts couldn't be reached)
+    product = get_product(barcode)
+    lookup_status = matching.LOOKUP_OK if product is not None else matching.LOOKUP_FAILED
+
+    # save the scan under whoever's logged in
     new_scan = Scan(user_id=user.id, barcode=barcode, barcode_type=barcode_type)
     database.session.add(new_scan)
     database.session.commit()
 
-    return jsonify({"scan": new_scan.to_dict()}), 201
+    scan_details = build_scan_details(new_scan, product, get_trigger_names(user), lookup_status)
+    return jsonify({"scan": scan_details}), 201
 
 
 @api_routes.get("/scans")
-@jwt_required()
-def list_recent_scans():
-    """Return the logged-in user's most recent scans, newest first."""
-    user = get_logged_in_user()
-    if user is None:
-        return error_response("Account not found. Log in again.", 401)
-
+@login_required
+def list_recent_scans(user):
+    """Sends back the user's most recent scans with verdicts, newest first."""
     recent_scans = (
         Scan.query.filter_by(user_id=user.id)  # only this user's scans
-        # Newest first. Sorting by id too breaks ties if two scans
-        # happen at the exact same moment.
-        .order_by(Scan.scanned_at.desc(), Scan.id.desc())
+        .order_by(Scan.scanned_at.desc(), Scan.id.desc())  # newest first
         .limit(RECENT_SCANS_LIMIT)
         .all()
     )
-    return jsonify({"scans": [scan.to_dict() for scan in recent_scans]})
+
+    # grab all the saved products for these scans in one go
+    scanned_barcodes = {scan.barcode for scan in recent_scans}
+    saved_products = Product.query.filter(Product.barcode.in_(scanned_barcodes)).all()
+    products_by_barcode = {product.barcode: product for product in saved_products}
+
+    # add the product and verdict to each scan
+    trigger_names = get_trigger_names(user)
+    scan_list = []
+    for scan in recent_scans:
+        product = products_by_barcode.get(scan.barcode)
+        lookup_status = matching.LOOKUP_OK if product else matching.LOOKUP_NOT_ATTEMPTED
+        scan_list.append(build_scan_details(scan, product, trigger_names, lookup_status))
+
+    return jsonify({"scans": scan_list})
 
 
-# ---------------------------------------------------------------------------
-# App setup
-# ---------------------------------------------------------------------------
+@api_routes.get("/profile")
+@login_required
+def get_profile(user):
+    """Sends back the user's triggers and the preset options."""
+    return build_profile_response(user)
+
+
+@api_routes.put("/profile")
+@login_required
+def update_profile(user):
+    """Replaces the user's whole trigger list with the one the app sent."""
+    request_body = request.get_json(silent=True) or {}
+    requested_triggers = request_body.get("triggers")
+    if not isinstance(requested_triggers, list):
+        return error_response("Send your triggers as a list.", 400)
+
+    # clean up each name and skip duplicates
+    cleaned_trigger_names = []
+    for raw_name in requested_triggers:
+        cleaned_name = matching.clean_trigger_name(raw_name)
+        if cleaned_name is None:
+            return error_response(
+                f'"{raw_name}" can\'t be added. Use letters, numbers, spaces, '
+                f"or hyphens, {matching.MIN_CUSTOM_TRIGGER_LENGTH}-"
+                f"{matching.MAX_CUSTOM_TRIGGER_LENGTH} characters long.",
+                400,
+            )
+        if cleaned_name not in cleaned_trigger_names:
+            cleaned_trigger_names.append(cleaned_name)
+
+    if len(cleaned_trigger_names) > matching.MAX_TRIGGERS_PER_USER:
+        return error_response(
+            f"You can add up to {matching.MAX_TRIGGERS_PER_USER} triggers.", 400
+        )
+
+    # delete the old list and save the new one
+    Trigger.query.filter_by(user_id=user.id).delete()
+    for trigger_name in cleaned_trigger_names:
+        database.session.add(Trigger(user_id=user.id, name=trigger_name))
+    database.session.commit()
+
+    return build_profile_response(user)
+
+
+@api_routes.get("/products/<barcode>/swaps")
+@login_required
+def find_safer_swaps(user, barcode):
+    """Finds similar products that are Safe for this user (like other chocolate spreads)."""
+    trigger_names = get_trigger_names(user)
+    if not trigger_names:
+        return jsonify({
+            "swaps": [],
+            "message": "Add what you avoid in your Profile first, so we know what's safe for you.",
+        })
+
+    product = get_product(barcode)
+    if product is None:
+        return error_response("Couldn't reach the food database. Try again in a minute.", 503)
+
+    # we need to know what kind of product it is to find similar ones
+    category_names = product.category_names or []
+    if not product.was_found or not category_names:
+        return jsonify({
+            "swaps": [],
+            "message": "We don't know what kind of product this is, so we can't suggest swaps.",
+        })
+
+    swaps = []
+    # start with the most specific category, then try one step more general
+    for category_name in reversed(category_names[-MAX_SWAP_CATEGORIES_TO_TRY:]):
+        try:
+            similar_products = food_lookup.search_similar_products(
+                category_name, exclude_barcode=barcode
+            )
+        except food_lookup.FoodLookupError:
+            return error_response("Couldn't reach the food database. Try again in a minute.", 503)
+
+        # keep the ones that come back Safe with this user's triggers
+        for similar_product in similar_products:
+            result = matching.evaluate_product(similar_product, trigger_names)
+            if result["verdict"] == matching.VERDICT_SAFE:
+                swaps.append(similar_product.to_dict())
+            if len(swaps) == MAX_SWAPS:
+                break
+
+        # found some, so no need to search again
+        if swaps:
+            break
+
+    message = "" if swaps else "Couldn't find a similar product that's safe for you yet."
+    return jsonify({"swaps": swaps, "message": message})
+
+
+# ----- setting up the app -----
+
+def use_psycopg2_driver(database_url):
+    """Tells SQLAlchemy to use the psycopg2 driver for PostgreSQL.
+
+    Newer SQLAlchemy versions look for a different driver by default and crash
+    without this. Anything that isn't PostgreSQL (like SQLite) is left alone.
+    """
+    for plain_prefix in ("postgresql://", "postgres://"):
+        if database_url.startswith(plain_prefix):
+            return "postgresql+psycopg2://" + database_url[len(plain_prefix):]
+    return database_url
+
 
 def create_app(config_overrides=None):
-    """Build and configure the Flask app.
-
-    config_overrides lets the automated tests swap in a temporary database
-    and a test secret key without touching the real settings.
-    """
+    """Sets up the Flask app. The tests pass in config_overrides to use a test database."""
     flask_app = Flask(__name__)
 
-    # Where the database is. Comes from .env, or falls back to a local
-    # PostgreSQL database named "safebite".
+    # where the database is (from .env, or a local "safebite" database)
     flask_app.config["SQLALCHEMY_DATABASE_URI"] = os.environ.get(
         "DATABASE_URL", "postgresql://localhost/safebite"
     )
 
-    # The secret used to sign login tokens. Anyone with this key could
-    # create fake logins, so the real one lives in .env, never on GitHub.
+    # the secret key that signs login tokens (the real one goes in .env)
     flask_app.config["JWT_SECRET_KEY"] = os.environ.get(
         "JWT_SECRET_KEY", "dev-only-secret-change-me-before-any-real-deployment"
     )
@@ -271,12 +365,14 @@ def create_app(config_overrides=None):
     if config_overrides:
         flask_app.config.update(config_overrides)
 
+    flask_app.config["SQLALCHEMY_DATABASE_URI"] = use_psycopg2_driver(
+        flask_app.config["SQLALCHEMY_DATABASE_URI"]
+    )
+
     database.init_app(flask_app)
     token_manager = JWTManager(flask_app)
 
-    # By default, Flask-JWT-Extended reports token problems in its own
-    # format. These three functions make them use our {"error": ...} format
-    # instead, with messages a user can understand.
+    # these make login token errors use our {"error": ...} format too
     @token_manager.unauthorized_loader
     def handle_missing_token(reason):
         return error_response("You need to log in first.", 401)
@@ -291,23 +387,37 @@ def create_app(config_overrides=None):
 
     flask_app.register_blueprint(api_routes)
 
-    # Create the users and scans tables if they don't exist yet.
-    # Tables that already exist (and their data) are left alone.
-    with flask_app.app_context():
-        database.create_all()
+    # hook up migrations (the files that build and change the tables)
+    # render_as_batch lets migrations change columns on SQLite too (used by the tests)
+    migrate.init_app(flask_app, database, directory=MIGRATIONS_FOLDER, render_as_batch=True)
 
     return flask_app
 
 
-# This only runs when you start the file directly with "python app.py",
-# not when the tests import it.
+def prepare_database(flask_app):
+    """Gets the database up to date by running any migrations that haven't run yet."""
+    with flask_app.app_context():
+        existing_tables = set(inspect(database.engine).get_table_names())
+
+        # databases made before we used migrations don't know which ones already
+        # happened, so mark the ones that match the tables that are already there
+        if "alembic_version" not in existing_tables:
+            if {"triggers", "products"} <= existing_tables:
+                stamp(revision=REVISION_TRIGGERS_AND_PRODUCTS)
+            elif "users" in existing_tables:
+                stamp(revision=REVISION_FIRST_TABLES)
+
+        # run whatever's left (on a brand new database, that's all of them)
+        upgrade()
+
+
+# only runs when you start this file with "python app.py"
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", DEFAULT_PORT))
 
-    # host="0.0.0.0" means "accept connections from other devices on the
-    # network", so your phone can reach the server over Wi-Fi. Without it,
-    # only the laptop itself could connect.
-    # debug=True reloads the server when you save a file and shows detailed
-    # errors. Turn it off before deploying anywhere public.
-    create_app().run(host="0.0.0.0", port=port, debug=True)
+    flask_app = create_app()
+    prepare_database(flask_app)
 
+    # 0.0.0.0 lets your phone connect over Wi-Fi, not just the laptop
+    # debug=True restarts the server when you save a file
+    flask_app.run(host="0.0.0.0", port=port, debug=True)
