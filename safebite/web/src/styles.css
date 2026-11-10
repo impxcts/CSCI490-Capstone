@@ -1,0 +1,345 @@
+/* All the styles. Colors match the phone app. */
+
+:root {
+  --dark-teal: #013a40;
+  --teal: #028090;
+  --mint: #02c39a;
+  --background: #f4faf9;
+  --text: #0b2b2e;
+  --muted: #4c6b6e;
+  --border: #d6e7e5;
+  --red: #b42318;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--background);
+  color: var(--text);
+  font-family: system-ui, -apple-system, sans-serif;
+  line-height: 1.4;
+}
+
+button,
+input {
+  font: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+h1,
+h2,
+h3 {
+  margin: 0 0 4px;
+}
+
+h1 {
+  color: var(--dark-teal);
+}
+
+ul {
+  margin: 8px 0 0;
+  padding-left: 20px;
+}
+
+input {
+  width: 100%;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  font-size: 16px; /* 16px stops iPhones from zooming in */
+}
+
+/* ---------- layout ---------- */
+
+/* keep everything phone-width, even on a laptop */
+.app,
+.login {
+  max-width: 480px;
+  margin: 0 auto;
+}
+
+.screen {
+  padding: 16px 16px 90px; /* bottom room for the tab bar */
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.loading {
+  text-align: center;
+  padding: 40px;
+}
+
+.card {
+  background: white;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 14px;
+}
+
+.muted {
+  color: var(--muted);
+  margin: 0;
+}
+
+.small {
+  font-size: 13px;
+}
+
+.center {
+  text-align: center;
+}
+
+.error {
+  color: var(--red);
+}
+
+/* ---------- buttons ---------- */
+
+.button {
+  width: 100%;
+  padding: 14px;
+  border: none;
+  border-radius: 12px;
+  background: var(--teal);
+  color: white;
+  font-weight: bold;
+}
+
+.button.outline {
+  background: white;
+  color: var(--teal);
+  border: 2px solid var(--teal);
+}
+
+.button.light {
+  width: auto;
+  padding: 14px 28px;
+  background: white;
+  color: var(--dark-teal);
+}
+
+.button.small {
+  width: auto;
+  padding: 12px 18px;
+}
+
+.link {
+  background: none;
+  border: none;
+  color: var(--teal);
+  font-weight: bold;
+  padding: 8px 0;
+}
+
+.link.danger {
+  color: var(--red);
+}
+
+/* a whole clickable row (history items, swaps) */
+.row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 6px 0;
+  background: none;
+  border: none;
+  text-align: left;
+  font-weight: bold;
+}
+
+.row .muted {
+  font-weight: normal;
+}
+
+/* ---------- login ---------- */
+
+.login {
+  padding: 60px 24px;
+}
+
+.logo {
+  font-size: 44px;
+}
+
+.login form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin: 24px 0 8px;
+}
+
+.login label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-weight: bold;
+}
+
+/* ---------- tabs ---------- */
+
+.tabs {
+  position: fixed;
+  bottom: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 100%;
+  max-width: 480px;
+  display: flex;
+  background: white;
+  border-top: 1px solid var(--border);
+}
+
+.tab {
+  flex: 1;
+  padding: 18px 0;
+  background: none;
+  border: none;
+  color: var(--muted);
+}
+
+.tab.active {
+  color: var(--teal);
+  font-weight: bold;
+}
+
+/* ---------- scan ---------- */
+
+.panel {
+  position: relative;
+  height: 420px;
+  background: var(--dark-teal);
+  color: white;
+  border-radius: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+
+.camera video {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+/* the green box you line the barcode up in */
+.camera .frame {
+  position: absolute;
+  inset: 38% 12%;
+  border: 3px solid var(--mint);
+  border-radius: 14px;
+}
+
+.camera .hint {
+  position: absolute;
+  bottom: 12px;
+  left: 0;
+  right: 0;
+  text-align: center;
+}
+
+.type-barcode {
+  display: flex;
+  gap: 8px;
+}
+
+/* ---------- result ---------- */
+
+.result {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.banner {
+  padding: 20px;
+  border-radius: 16px;
+  font-size: 32px;
+  font-weight: bold;
+}
+
+.product {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+
+.product img {
+  width: 64px;
+  height: 64px;
+  object-fit: cover;
+  border-radius: 10px;
+}
+
+details {
+  margin-top: 10px;
+}
+
+summary {
+  color: var(--teal);
+  font-weight: bold;
+  cursor: pointer;
+}
+
+/* ---------- verdict colors (banner and badges) ---------- */
+
+.badge {
+  padding: 3px 10px;
+  border-radius: 99px;
+  font-size: 13px;
+  font-weight: bold;
+  white-space: nowrap;
+}
+
+.avoid {
+  background: #fee4e2;
+  color: #b42318;
+}
+
+.caution {
+  background: #fef0c7;
+  color: #93370d;
+}
+
+.safe {
+  background: #dcfae6;
+  color: #067647;
+}
+
+.unchecked {
+  background: #e6f2f1;
+  color: #4c6b6e;
+}
+
+/* ---------- profile chips ---------- */
+
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.chip {
+  padding: 8px 14px;
+  border: 1.5px solid var(--border);
+  border-radius: 99px;
+  background: white;
+}
+
+.chip.on {
+  background: var(--teal);
+  border-color: var(--teal);
+  color: white;
+}

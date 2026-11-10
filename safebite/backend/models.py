@@ -56,7 +56,7 @@ class User(database.Model):
 
     def set_password(self, plain_text_password):
         """Hashes the password and saves the hash."""
-        self.password_hash = generate_password_hash(plain_text_password)
+        self.password_hash = generate_password_hash(plain_text_password, method="pbkdf2:sha256")
 
     def check_password(self, plain_text_password):
         """Checks if a typed password matches the saved hash."""
