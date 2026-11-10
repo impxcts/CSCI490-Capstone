@@ -723,9 +723,9 @@ final project.
 ## Credits
 
 - **Author:** Jesse Ortiz
-- **Course:** CSCI 490 Capstone, [Semester and year]
+- **Course:** CSCI 490 Capstone, [Fall 2026]
 - **Code review:** Miguel
-- **Instructor:** [Instructor name]
+- **Instructor:** []
 
 Thanks to [Open Food Facts](https://world.openfoodfacts.org) for building a
 free, open food database, and to everyone living with a chronic illness who
